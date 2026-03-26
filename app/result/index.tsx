@@ -1,6 +1,6 @@
 // app/result/index.tsx — Resultado da análise
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, SafeAreaView } from 'react-native';
-import { router } from 'expo-router';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, SafeAreaView, Image } from 'react-native';
+import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../constants/colors';
 
@@ -12,12 +12,16 @@ const FOODS = [
 ];
 
 export default function ResultScreen() {
+  const { imageUri } = useLocalSearchParams<{ imageUri?: string }>();
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.gray50 }}>
       <ScrollView>
         {/* Hero */}
         <View style={styles.hero}>
-          <Text style={{ fontSize: 90 }}>🥗</Text>
+          {imageUri
+            ? <Image source={{ uri: imageUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+            : <Text style={{ fontSize: 90 }}>🥗</Text>
+          }
           <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
             <Ionicons name="chevron-back" size={20} color={colors.white} />
           </TouchableOpacity>
@@ -96,7 +100,7 @@ function MacroBlock({ label, value, bg, textColor }: {
 const styles = StyleSheet.create({
   hero:        { height: 220, backgroundColor: '#2d5a3e', alignItems: 'center', justifyContent: 'center' },
   backBtn:     { position: 'absolute', top: 48, left: 16, width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' },
-  heroOverlay: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 20, paddingTop: 40, background: 'transparent' },
+  heroOverlay: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 20, paddingTop: 40 },
   heroCalories:{ fontSize: 36, fontWeight: '700', color: colors.white },
   heroUnit:    { fontSize: 16, fontWeight: '400', color: 'rgba(255,255,255,0.7)' },
   heroMeal:    { fontSize: 13, color: 'rgba(255,255,255,0.7)', marginTop: 2 },
