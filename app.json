@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "CaloriQ",
+    "slug": "caloriq",
+    "version": "1.0.0",
+    "sdkVersion": "52.0.0",
+    "orientation": "portrait",
+    "scheme": "caloriq",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#16a34a"
+    },
+    "ios": {
+      "bundleIdentifier": "com.caloriq.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Precisamos da câmera para fotografar seus pratos.",
+        "NSPhotoLibraryUsageDescription": "Precisamos acessar suas fotos para análise nutricional."
+      }
+    },
+    "android": {
+      "package": "com.caloriq.app",
+      "permissions": ["CAMERA", "READ_EXTERNAL_STORAGE"]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-camera",
+      "expo-image-picker"
+    ]
+  }
+}
