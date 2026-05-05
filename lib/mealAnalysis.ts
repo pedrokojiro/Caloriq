@@ -278,7 +278,47 @@ function extractOutputText(data: any): string {
 function parseJsonPayload(text: string): OpenAIMealPayload {
   const trimmed = text.trim();
   const withoutFence = trimmed.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
-  return JSON.parse(withoutFence) as OpenAIMealPayload;
+  const extracted = extractFirstJsonObject(withoutFence) ?? withoutFence;
+  return JSON.parse(extracted) as OpenAIMealPayload;
+}
+
+function extractFirstJsonObject(text: string) {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (char === '{') depth += 1;
+    if (char === '}') depth -= 1;
+
+    if (depth === 0) {
+      return text.slice(start, index + 1);
+    }
+  }
+
+  return null;
 }
 
 function normalizeMealPayload(payload: OpenAIMealPayload, imageUri?: string): Meal {

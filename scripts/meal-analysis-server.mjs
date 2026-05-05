@@ -78,7 +78,7 @@ async function analyzeWithOllama(imageUrl) {
   }
 
   const data = await response.json();
-  return { output_text: data.response };
+  return { output_text: sanitizeModelJson(data.response) };
 }
 
 async function analyzeWithOpenAI(imageUrl) {
@@ -120,10 +120,69 @@ async function analyzeWithOpenAI(imageUrl) {
 function buildPrompt() {
   return [
     'Analise apenas a comida claramente visível. Seja conservador, não invente ingredientes ocultos.',
-    'Retorne somente JSON válido. Máximo 4 alimentos principais. Confiança máxima 85.',
-    '{"title":"descrição curta e cautelosa","type":"Café|Almoço|Jantar|Lanche","confidence":55,"uncertainty":"o que limita a estimativa","foods":[{"name":"Arroz branco","emoji":"🍚","portion":"porção média visível","calories":180,"confidence":60}],"macros":{"protein":20,"carbs":55,"fat":14,"fiber":6}}',
+    'Retorne só um objeto JSON, começando com { e terminando com }. Não escreva explicações.',
+    'Máximo 4 alimentos principais. Confiança máxima 85.',
+    '{"title":"arroz com feijão","type":"Almoço","confidence":55,"uncertainty":"porção estimada visualmente","foods":[{"name":"Arroz branco","emoji":"🍚","portion":"porção média visível","calories":180,"confidence":60}],"macros":{"protein":20,"carbs":55,"fat":14,"fiber":6}}',
     'Use português do Brasil.',
   ].join('\n');
+}
+
+function sanitizeModelJson(text) {
+  if (typeof text !== 'string') return '{}';
+  const trimmed = text.trim();
+  const fenced = trimmed
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+
+  const extracted = extractFirstJsonObject(fenced);
+  if (!extracted) return fenced;
+
+  try {
+    return JSON.stringify(JSON.parse(extracted));
+  } catch {
+    return extracted;
+  }
+}
+
+function extractFirstJsonObject(text) {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (char === '{') depth += 1;
+    if (char === '}') depth -= 1;
+
+    if (depth === 0) {
+      return text.slice(start, index + 1);
+    }
+  }
+
+  return null;
 }
 
 function getBase64FromDataUrl(imageUrl) {
