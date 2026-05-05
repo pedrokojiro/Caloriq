@@ -132,7 +132,8 @@ async function requestBackendAnalysis(endpoint: string, imageUrl: string) {
   });
 
   if (!response.ok) {
-    throw new Error(`Endpoint retornou HTTP ${response.status}`);
+    const body = await response.text();
+    throw new Error(`Endpoint retornou HTTP ${response.status}: ${body.slice(0, 220)}`);
   }
 
   return response.json();
@@ -293,6 +294,7 @@ function getFriendlyError(error: unknown) {
   if (message.includes('401')) return 'Chave da OpenAI inválida ou ausente. Confira o arquivo .env e reinicie o Expo.';
   if (message.includes('429')) return 'Limite ou saldo da API atingido. Verifique billing/usage na OpenAI.';
   if (message.includes('HTTP 400')) return 'A API rejeitou a imagem ou o formato da requisição.';
+  if (message.includes('Ollama')) return 'Ollama não respondeu. Instale o Ollama, baixe o modelo de visão e reinicie o servidor local.';
   if (message.includes('Failed to fetch')) return 'Não foi possível conectar à OpenAI pelo navegador.';
   return message;
 }

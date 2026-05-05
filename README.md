@@ -35,6 +35,31 @@ npx expo start
 
 Escaneie o QR code com o **Expo Go** (iOS / Android).
 
+## IA gratuita/local com Ollama
+
+O projeto pode analisar imagens sem créditos da OpenAI usando Ollama localmente.
+
+```bash
+# Instale o Ollama pelo site oficial e depois baixe o modelo de visão
+ollama pull llama3.2-vision
+
+# Em um terminal, suba o servidor local de análise
+npm run ai-server
+
+# Em outro terminal, rode o app no navegador
+npx expo start --web --clear --port 8086
+```
+
+No `.env`, use:
+
+```env
+EXPO_PUBLIC_MEAL_ANALYSIS_ENDPOINT=http://localhost:8787/analyze
+MEAL_ANALYSIS_PROVIDER=ollama
+OLLAMA_VISION_MODEL=llama3.2-vision
+```
+
+Para voltar para OpenAI, troque `MEAL_ANALYSIS_PROVIDER=openai` e configure a chave.
+
 ## Estrutura do projeto
 
 ```
