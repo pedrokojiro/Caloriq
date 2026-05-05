@@ -6,9 +6,9 @@ import { analyzeMealImage } from '../../lib/mealAnalysis';
 
 const STEPS = [
   { text: 'Imagem recebida e processada', done: true },
-  { text: 'Alimentos identificados', done: true },
-  { text: 'Calculando porções e calorias...', done: false },
-  { text: 'Gerando estimativa nutricional', done: false },
+  { text: 'Enviando para a IA local', done: true },
+  { text: 'Identificando alimentos visíveis...', done: false },
+  { text: 'Estimando calorias e macros', done: false },
 ];
 
 export default function AnalyzingScreen() {
@@ -107,7 +107,7 @@ export default function AnalyzingScreen() {
 
         <Text style={styles.label}>IA TRABALHANDO</Text>
         <Text style={styles.title}>Analisando alimentos e{'\n'}estimando calorias...</Text>
-        <Text style={styles.subtitle}>Isso leva apenas alguns segundos</Text>
+        <Text style={styles.subtitle}>No Ollama, a primeira análise pode levar mais tempo</Text>
 
         <View style={styles.steps}>
           {STEPS.map((step, i) => (

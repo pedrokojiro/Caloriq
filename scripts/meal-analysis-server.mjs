@@ -59,8 +59,10 @@ async function analyzeWithOllama(imageUrl) {
       images: [imageBase64],
       stream: false,
       format: 'json',
+      keep_alive: '1m',
       options: {
         temperature: 0.1,
+        num_predict: 260,
       },
     }),
   });
@@ -112,13 +114,8 @@ async function analyzeWithOpenAI(imageUrl) {
 
 function buildPrompt() {
   return [
-    'Você é um estimador nutricional conservador para um app de diário alimentar.',
-    'Analise APENAS o que é claramente visível na imagem. Não invente ingredientes ocultos, marcas, molhos, óleos, bebidas ou acompanhamentos.',
-    'Se não conseguir identificar um item com boa segurança, use um nome genérico como "alimento não identificado" e reduza a confiança.',
-    'Nunca dê confiança acima de 85. Use 20-45 para imagem ruim, prato parcialmente visível ou item ambíguo. Use 45-70 para estimativa comum. Use 70-85 apenas quando alimentos e porções estiverem muito claros.',
-    'Limite a lista a no máximo 5 alimentos principais visíveis. Não quebre temperos ou ingredientes pequenos em itens próprios.',
-    'Responda somente com JSON válido, sem markdown.',
-    'Formato exato:',
+    'Analise apenas a comida claramente visível. Seja conservador, não invente ingredientes ocultos.',
+    'Retorne somente JSON válido. Máximo 4 alimentos principais. Confiança máxima 85.',
     '{"title":"descrição curta e cautelosa","type":"Café|Almoço|Jantar|Lanche","confidence":55,"uncertainty":"o que limita a estimativa","foods":[{"name":"Arroz branco","emoji":"🍚","portion":"porção média visível","calories":180,"confidence":60}],"macros":{"protein":20,"carbs":55,"fat":14,"fiber":6}}',
     'Use português do Brasil.',
   ].join('\n');

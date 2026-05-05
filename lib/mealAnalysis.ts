@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { FoodItem, Meal, MealType } from './types';
 
 const foodSets: Array<{
@@ -193,6 +194,20 @@ async function toDataUrl(imageUri: string): Promise<string> {
   if (imageUri.startsWith('http://') || imageUri.startsWith('https://')) return imageUri;
   if (imageUri.startsWith('blob:')) return blobUriToDataUrl(imageUri);
 
+  const compressed = await ImageManipulator.manipulateAsync(
+    imageUri,
+    [{ resize: { width: 768 } }],
+    {
+      compress: 0.55,
+      format: ImageManipulator.SaveFormat.JPEG,
+      base64: true,
+    }
+  );
+
+  if (compressed.base64) {
+    return `data:image/jpeg;base64,${compressed.base64}`;
+  }
+
   const base64 = await FileSystem.readAsStringAsync(imageUri, {
     encoding: FileSystem.EncodingType.Base64,
   });
@@ -202,12 +217,41 @@ async function toDataUrl(imageUri: string): Promise<string> {
 async function blobUriToDataUrl(uri: string): Promise<string> {
   const response = await fetch(uri);
   const blob = await response.blob();
+  return compressBlobToDataUrl(blob);
+}
 
+function compressBlobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error('Não foi possível ler a imagem no navegador.'));
-    reader.readAsDataURL(blob);
+    const image = new globalThis.Image();
+    const objectUrl = URL.createObjectURL(blob);
+
+    image.onload = () => {
+      const maxWidth = 768;
+      const scale = Math.min(1, maxWidth / image.width);
+      const width = Math.max(1, Math.round(image.width * scale));
+      const height = Math.max(1, Math.round(image.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+
+      const context = canvas.getContext('2d');
+      if (!context) {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error('Não foi possível preparar a imagem no navegador.'));
+        return;
+      }
+
+      context.drawImage(image, 0, 0, width, height);
+      URL.revokeObjectURL(objectUrl);
+      resolve(canvas.toDataURL('image/jpeg', 0.55));
+    };
+
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Não foi possível ler a imagem no navegador.'));
+    };
+
+    image.src = objectUrl;
   });
 }
 
