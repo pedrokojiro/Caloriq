@@ -5,7 +5,8 @@ const PORT = Number(process.env.MEAL_ANALYSIS_PORT ?? 8787);
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const OLLAMA_GENERATE_URL = 'http://localhost:11434/api/generate';
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1-mini';
-const DEFAULT_OLLAMA_MODEL = 'llama3.2-vision';
+const DEFAULT_OLLAMA_MODEL = 'moondream';
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 90000);
 
 loadEnvFile();
 
@@ -50,9 +51,13 @@ server.listen(PORT, () => {
 
 async function analyzeWithOllama(imageUrl) {
   const imageBase64 = getBase64FromDataUrl(imageUrl);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+
   const response = await fetch(OLLAMA_GENERATE_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: controller.signal,
     body: JSON.stringify({
       model: process.env.OLLAMA_VISION_MODEL || DEFAULT_OLLAMA_MODEL,
       prompt: buildPrompt(),
@@ -65,7 +70,7 @@ async function analyzeWithOllama(imageUrl) {
         num_predict: 260,
       },
     }),
-  });
+  }).finally(() => clearTimeout(timeout));
 
   if (!response.ok) {
     const body = await response.text();
