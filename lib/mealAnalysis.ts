@@ -106,18 +106,36 @@ export async function analyzeMealImage(imageUri?: string): Promise<Meal> {
     return normalizeMealPayload(payload, imageUri);
   } catch (error) {
     if (isJsonParsingError(error)) {
-      const meal = createAnalyzedMeal(imageUri);
-      return {
-        ...meal,
-        title: `${meal.title} (estimativa local)`,
-        confidence: Math.min(meal.confidence, 45),
-        analysisSource: 'demo',
-        analysisError: 'O modelo local retornou uma resposta incompleta; usamos uma estimativa conservadora.',
-      };
+      return createGenericLocalEstimate(imageUri);
     }
 
     return createAnalysisErrorMeal(imageUri, getFriendlyError(error));
   }
+}
+
+function createGenericLocalEstimate(imageUri: string | undefined): Meal {
+  const calories = 320;
+  return {
+    id: `${Date.now()}`,
+    title: 'Refeição visível (estimativa local)',
+    type: 'Almoço',
+    imageUri,
+    createdAt: new Date().toISOString(),
+    calories,
+    confidence: 35,
+    foods: [
+      {
+        id: `${Date.now()}-generic`,
+        emoji: '🍽️',
+        name: 'Alimentos visíveis',
+        portion: 'porção estimada pela imagem',
+        calories,
+      },
+    ],
+    macros: estimateMacros(calories),
+    analysisSource: 'demo',
+    analysisError: 'O modelo local retornou uma resposta incompleta; usamos uma estimativa genérica e conservadora.',
+  };
 }
 
 function createAnalysisErrorMeal(imageUri: string | undefined, message: string): Meal {
