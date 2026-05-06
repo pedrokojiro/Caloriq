@@ -8,7 +8,7 @@ const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const OLLAMA_GENERATE_URL = 'http://localhost:11434/api/generate';
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1-mini';
 const DEFAULT_OLLAMA_MODEL = 'llama3.2-vision';
-const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 240000);
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 600000);
 
 const server = createServer(async (req, res) => {
   setCorsHeaders(res);
@@ -54,32 +54,40 @@ async function analyzeWithOllama(imageUrl) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
 
-  const response = await fetch(OLLAMA_GENERATE_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    signal: controller.signal,
-    body: JSON.stringify({
-      model: process.env.OLLAMA_VISION_MODEL || DEFAULT_OLLAMA_MODEL,
-      prompt: buildVisionDescriptionPrompt(),
-      images: [imageBase64],
-      stream: false,
-      keep_alive: '1m',
-      options: {
-        temperature: 0,
-        num_predict: 120,
-      },
-    }),
-  }).finally(() => clearTimeout(timeout));
+  try {
+    const response = await fetch(OLLAMA_GENERATE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: process.env.OLLAMA_VISION_MODEL || DEFAULT_OLLAMA_MODEL,
+        prompt: buildVisionDescriptionPrompt(),
+        images: [imageBase64],
+        stream: false,
+        keep_alive: '5m',
+        options: {
+          temperature: 0,
+          num_predict: 80,
+        },
+      }),
+    });
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Ollama retornou HTTP ${response.status}: ${body.slice(0, 180)}`);
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Ollama retornou HTTP ${response.status}: ${body.slice(0, 180)}`);
+    }
+
+    const data = await response.json();
+    const description = typeof data.response === 'string' ? data.response : '';
+    console.log(`Ollama description: ${description.trim().slice(0, 240)}`);
+    return { output_text: JSON.stringify(buildMealPayloadFromDescription(description)) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'erro desconhecido';
+    console.warn(`Ollama fallback: ${message}`);
+    return { output_text: JSON.stringify(buildTimedOutLocalPayload(message)) };
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const data = await response.json();
-  const description = typeof data.response === 'string' ? data.response : '';
-  console.log(`Ollama description: ${description.trim().slice(0, 240)}`);
-  return { output_text: JSON.stringify(buildMealPayloadFromDescription(description)) };
 }
 
 async function analyzeWithOpenAI(imageUrl) {
@@ -182,6 +190,30 @@ function buildMealPayloadFromDescription(description) {
     uncertainty: buildUncertainty(description, foods.length),
     foods: normalizedFoods.map(({ proteinRatio, carbsRatio, fatRatio, fiberRatio, ...food }) => food),
     macros: estimateMacrosFromFoods(normalizedFoods),
+  };
+}
+
+function buildTimedOutLocalPayload(reason) {
+  return {
+    title: 'Refei\u00E7\u00E3o vis\u00EDvel (estimativa local)',
+    type: 'Almo\u00E7o',
+    confidence: 30,
+    uncertainty: `o modelo local demorou ou falhou; estimativa conservadora usada (${reason.slice(0, 80)})`,
+    foods: [
+      {
+        name: 'Alimentos vis\u00EDveis',
+        emoji: '\uD83C\uDF7D\uFE0F',
+        portion: 'por\u00E7\u00E3o estimada pela imagem',
+        calories: 300,
+        confidence: 30,
+      },
+    ],
+    macros: {
+      protein: 23,
+      carbs: 33,
+      fat: 11,
+      fiber: 4,
+    },
   };
 }
 

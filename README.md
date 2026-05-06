@@ -56,7 +56,7 @@ No `.env`, use:
 EXPO_PUBLIC_MEAL_ANALYSIS_ENDPOINT=http://localhost:8787/analyze
 MEAL_ANALYSIS_PROVIDER=ollama
 OLLAMA_VISION_MODEL=llama3.2-vision
-OLLAMA_TIMEOUT_MS=240000
+OLLAMA_TIMEOUT_MS=600000
 ```
 
 Em PCs sem GPU forte, a primeira análise com `llama3.2-vision` pode levar alguns minutos.
