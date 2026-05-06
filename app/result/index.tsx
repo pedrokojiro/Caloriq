@@ -183,6 +183,7 @@ export default function ResultScreen() {
 
 function getBadgeText(meal: Meal, isSavedDetail: boolean) {
   if (meal.analysisSource === 'error') return 'Falha na análise da IA';
+  if (meal.analysisSource === 'demo' && meal.analysisError) return 'Estimativa local conservadora';
   if (meal.analysisSource === 'demo') return 'Resultado demonstrativo';
   if (isSavedDetail) return 'Análise salva no histórico';
   return 'Precisão estimada da análise';

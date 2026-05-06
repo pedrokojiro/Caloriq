@@ -67,7 +67,7 @@ async function analyzeWithOllama(imageUrl) {
       keep_alive: '1m',
       options: {
         temperature: 0.1,
-        num_predict: 260,
+        num_predict: 180,
       },
     }),
   }).finally(() => clearTimeout(timeout));
@@ -142,8 +142,49 @@ function sanitizeModelJson(text) {
   try {
     return JSON.stringify(JSON.parse(extracted));
   } catch {
-    return extracted;
+    return JSON.stringify(buildConservativeFallbackFromText(extracted));
   }
+}
+
+function buildConservativeFallbackFromText(text) {
+  const lower = text.toLowerCase();
+  const foods = [];
+
+  if (lower.includes('arroz')) {
+    foods.push({ name: 'Arroz branco', emoji: '🍚', portion: 'porção visível estimada', calories: 180, confidence: 60 });
+  }
+
+  if (lower.includes('feijão') || lower.includes('feijao')) {
+    foods.push({ name: 'Feijão', emoji: '🫘', portion: 'porção visível estimada', calories: 120, confidence: 58 });
+  }
+
+  if (lower.includes('carne') || lower.includes('frango') || lower.includes('proteína') || lower.includes('proteina')) {
+    foods.push({ name: 'Proteína visível', emoji: '🍽️', portion: 'porção estimada', calories: 180, confidence: 45 });
+  }
+
+  const normalizedFoods = foods.length > 0
+    ? foods
+    : [{ name: 'Alimentos visíveis', emoji: '🍽️', portion: 'porção estimada pela imagem', calories: 300, confidence: 35 }];
+  const calories = normalizedFoods.reduce((total, food) => total + food.calories, 0);
+
+  return {
+    title: normalizedFoods.length > 1 ? 'refeição estimada' : normalizedFoods[0].name,
+    type: 'Almoço',
+    confidence: Math.max(35, Math.min(60, Math.round(average(normalizedFoods.map(food => food.confidence))))),
+    uncertainty: 'modelo local retornou JSON incompleto; resultado reconstruído de forma conservadora',
+    foods: normalizedFoods,
+    macros: {
+      protein: Math.round(calories * 0.075),
+      carbs: Math.round(calories * 0.11),
+      fat: Math.round(calories * 0.035),
+      fiber: Math.max(3, Math.round(calories * 0.012)),
+    },
+  };
+}
+
+function average(values) {
+  if (values.length === 0) return 0;
+  return values.reduce((total, value) => total + value, 0) / values.length;
 }
 
 function extractFirstJsonObject(text) {

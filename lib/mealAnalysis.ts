@@ -105,6 +105,17 @@ export async function analyzeMealImage(imageUri?: string): Promise<Meal> {
     const payload = parseJsonPayload(text);
     return normalizeMealPayload(payload, imageUri);
   } catch (error) {
+    if (isJsonParsingError(error)) {
+      const meal = createAnalyzedMeal(imageUri);
+      return {
+        ...meal,
+        title: `${meal.title} (estimativa local)`,
+        confidence: Math.min(meal.confidence, 45),
+        analysisSource: 'demo',
+        analysisError: 'O modelo local retornou uma resposta incompleta; usamos uma estimativa conservadora.',
+      };
+    }
+
     return createAnalysisErrorMeal(imageUri, getFriendlyError(error));
   }
 }
@@ -381,6 +392,11 @@ function getFriendlyError(error: unknown) {
   if (message.includes('Ollama')) return 'Ollama não respondeu. Instale o Ollama, baixe o modelo de visão e reinicie o servidor local.';
   if (message.includes('Failed to fetch')) return 'Não foi possível conectar à OpenAI pelo navegador.';
   return message;
+}
+
+function isJsonParsingError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  return error instanceof SyntaxError || error.message.includes('JSON');
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number) {
