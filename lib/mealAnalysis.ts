@@ -66,6 +66,8 @@ type OpenAIMealPayload = {
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const DEFAULT_MODEL = 'gpt-4.1-mini';
 const PLACEHOLDER_KEY = 'coloque_sua_chave_openai_aqui';
+const ANALYSIS_IMAGE_MAX_WIDTH = 448;
+const ANALYSIS_IMAGE_QUALITY = 0.42;
 
 export function createAnalyzedMeal(imageUri?: string): Meal {
   const seed = imageUri ? imageUri.length % foodSets.length : 0;
@@ -225,9 +227,9 @@ async function toDataUrl(imageUri: string): Promise<string> {
 
   const compressed = await ImageManipulator.manipulateAsync(
     imageUri,
-    [{ resize: { width: 768 } }],
+    [{ resize: { width: ANALYSIS_IMAGE_MAX_WIDTH } }],
     {
-      compress: 0.55,
+      compress: ANALYSIS_IMAGE_QUALITY,
       format: ImageManipulator.SaveFormat.JPEG,
       base64: true,
     }
@@ -255,7 +257,7 @@ function compressBlobToDataUrl(blob: Blob): Promise<string> {
     const objectUrl = URL.createObjectURL(blob);
 
     image.onload = () => {
-      const maxWidth = 768;
+      const maxWidth = ANALYSIS_IMAGE_MAX_WIDTH;
       const scale = Math.min(1, maxWidth / image.width);
       const width = Math.max(1, Math.round(image.width * scale));
       const height = Math.max(1, Math.round(image.height * scale));
@@ -272,7 +274,7 @@ function compressBlobToDataUrl(blob: Blob): Promise<string> {
 
       context.drawImage(image, 0, 0, width, height);
       URL.revokeObjectURL(objectUrl);
-      resolve(canvas.toDataURL('image/jpeg', 0.55));
+      resolve(canvas.toDataURL('image/jpeg', ANALYSIS_IMAGE_QUALITY));
     };
 
     image.onerror = () => {

@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { readFileSync, existsSync } from 'node:fs';
+import { appendFileSync, readFileSync, existsSync } from 'node:fs';
 
 loadEnvFile();
 
@@ -50,9 +50,11 @@ server.listen(PORT, () => {
 });
 
 async function analyzeWithOllama(imageUrl) {
+  const startedAt = Date.now();
   const imageBase64 = getBase64FromDataUrl(imageUrl);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+  const model = process.env.OLLAMA_VISION_MODEL || DEFAULT_OLLAMA_MODEL;
 
   try {
     const response = await fetch(OLLAMA_GENERATE_URL, {
@@ -60,14 +62,14 @@ async function analyzeWithOllama(imageUrl) {
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
       body: JSON.stringify({
-        model: process.env.OLLAMA_VISION_MODEL || DEFAULT_OLLAMA_MODEL,
+        model,
         prompt: buildVisionDescriptionPrompt(),
         images: [imageBase64],
-        stream: false,
-        keep_alive: '5m',
+        stream: true,
+        keep_alive: '10m',
         options: {
           temperature: 0,
-          num_predict: 80,
+          num_predict: 40,
         },
       }),
     });
@@ -77,17 +79,61 @@ async function analyzeWithOllama(imageUrl) {
       throw new Error(`Ollama retornou HTTP ${response.status}: ${body.slice(0, 180)}`);
     }
 
-    const data = await response.json();
-    const description = typeof data.response === 'string' ? data.response : '';
+    const description = await readOllamaStream(response);
     console.log(`Ollama description: ${description.trim().slice(0, 240)}`);
+    appendLog(`OK ${model} ${Date.now() - startedAt}ms ${description.trim().slice(0, 240)}`);
     return { output_text: JSON.stringify(buildMealPayloadFromDescription(description)) };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'erro desconhecido';
     console.warn(`Ollama fallback: ${message}`);
+    appendLog(`FALLBACK ${model} ${Date.now() - startedAt}ms ${message}`);
     return { output_text: JSON.stringify(buildTimedOutLocalPayload(message)) };
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function readOllamaStream(response) {
+  if (!response.body) {
+    const data = await response.json();
+    return typeof data.response === 'string' ? data.response : '';
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let output = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const chunk = JSON.parse(line);
+        if (typeof chunk.response === 'string') output += chunk.response;
+        if (chunk.done) return output;
+      } catch {
+        // Ignore partial stream chunks.
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    try {
+      const chunk = JSON.parse(buffer);
+      if (typeof chunk.response === 'string') output += chunk.response;
+    } catch {
+      // Ignore trailing partial stream data.
+    }
+  }
+
+  return output;
 }
 
 async function analyzeWithOpenAI(imageUrl) {
@@ -217,8 +263,21 @@ function buildTimedOutLocalPayload(reason) {
   };
 }
 
+function appendLog(message) {
+  try {
+    appendFileSync(
+      'meal-analysis-server.log',
+      `${new Date().toISOString()} ${message}\n`,
+      'utf8'
+    );
+  } catch {
+    // Logging must never block the local analysis flow.
+  }
+}
+
 function detectFoods(text) {
   const foods = [];
+  const hasRiceAndBeans = hasAny(text, ['arroz', 'rice']) && hasAny(text, ['feijao', 'feijoada', 'beans', 'bean']);
 
   if (hasAny(text, ['arroz', 'rice'])) {
     foods.push(createDetectedFood('Arroz branco', '\uD83C\uDF5A', 'por\u00E7\u00E3o vis\u00EDvel estimada', 180, 64, 0.026, 0.28, 0.003, 0.004));
@@ -228,15 +287,15 @@ function detectFoods(text) {
     foods.push(createDetectedFood('Feij\u00E3o', '\uD83E\uDED8', 'por\u00E7\u00E3o vis\u00EDvel estimada', 120, 62, 0.055, 0.16, 0.006, 0.055));
   }
 
-  if (hasAny(text, ['frango', 'chicken', 'peito de frango'])) {
+  if (!hasRiceAndBeans && hasAny(text, ['frango grelhado', 'peito de frango', 'pedaco de frango', 'pedaço de frango', 'chicken'])) {
     foods.push(createDetectedFood('Frango', '\uD83C\uDF57', 'por\u00E7\u00E3o m\u00E9dia vis\u00EDvel', 210, 58, 0.19, 0.01, 0.07, 0.002));
   }
 
-  if (hasAny(text, ['carne', 'bife', 'beef', 'steak', 'meat'])) {
+  if (!hasRiceAndBeans && hasAny(text, ['bife', 'carne bovina', 'carne moida', 'carne moída', 'beef', 'steak'])) {
     foods.push(createDetectedFood('Carne', '\uD83E\uDD69', 'por\u00E7\u00E3o m\u00E9dia vis\u00EDvel', 240, 55, 0.17, 0.01, 0.12, 0.001));
   }
 
-  if (hasAny(text, ['ovo', 'eggs', 'egg', 'omelete', 'omelet'])) {
+  if (!hasRiceAndBeans && hasAny(text, ['ovo frito', 'ovo cozido', 'ovos', 'eggs', 'egg', 'omelete', 'omelet'])) {
     foods.push(createDetectedFood('Ovo', '\uD83E\uDD5A', 'unidade ou por\u00E7\u00E3o vis\u00EDvel', 90, 58, 0.13, 0.01, 0.1, 0.001));
   }
 
