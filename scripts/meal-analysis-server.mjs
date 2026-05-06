@@ -1,14 +1,14 @@
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 
+loadEnvFile();
+
 const PORT = Number(process.env.MEAL_ANALYSIS_PORT ?? 8787);
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const OLLAMA_GENERATE_URL = 'http://localhost:11434/api/generate';
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1-mini';
 const DEFAULT_OLLAMA_MODEL = 'llama3.2-vision';
-const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 90000);
-
-loadEnvFile();
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 240000);
 
 const server = createServer(async (req, res) => {
   setCorsHeaders(res);

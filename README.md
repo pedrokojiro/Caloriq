@@ -41,7 +41,7 @@ O projeto pode analisar imagens sem créditos da OpenAI usando Ollama localmente
 
 ```bash
 # Instale o Ollama pelo site oficial e depois baixe o modelo de visão
-ollama pull moondream
+ollama pull llama3.2-vision
 
 # Em um terminal, suba o servidor local de análise
 npm run ai-server
@@ -55,9 +55,11 @@ No `.env`, use:
 ```env
 EXPO_PUBLIC_MEAL_ANALYSIS_ENDPOINT=http://localhost:8787/analyze
 MEAL_ANALYSIS_PROVIDER=ollama
-OLLAMA_VISION_MODEL=moondream
-OLLAMA_TIMEOUT_MS=90000
+OLLAMA_VISION_MODEL=llama3.2-vision
+OLLAMA_TIMEOUT_MS=240000
 ```
+
+Em PCs sem GPU forte, a primeira análise com `llama3.2-vision` pode levar alguns minutos.
 
 Para voltar para OpenAI, troque `MEAL_ANALYSIS_PROVIDER=openai` e configure a chave.
 
