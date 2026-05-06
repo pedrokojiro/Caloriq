@@ -5,7 +5,7 @@ const PORT = Number(process.env.MEAL_ANALYSIS_PORT ?? 8787);
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const OLLAMA_GENERATE_URL = 'http://localhost:11434/api/generate';
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1-mini';
-const DEFAULT_OLLAMA_MODEL = 'moondream';
+const DEFAULT_OLLAMA_MODEL = 'llama3.2-vision';
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 90000);
 
 loadEnvFile();
@@ -60,14 +60,13 @@ async function analyzeWithOllama(imageUrl) {
     signal: controller.signal,
     body: JSON.stringify({
       model: process.env.OLLAMA_VISION_MODEL || DEFAULT_OLLAMA_MODEL,
-      prompt: buildPrompt(),
+      prompt: buildVisionDescriptionPrompt(),
       images: [imageBase64],
       stream: false,
-      format: 'json',
       keep_alive: '1m',
       options: {
-        temperature: 0.1,
-        num_predict: 180,
+        temperature: 0,
+        num_predict: 120,
       },
     }),
   }).finally(() => clearTimeout(timeout));
@@ -78,7 +77,9 @@ async function analyzeWithOllama(imageUrl) {
   }
 
   const data = await response.json();
-  return { output_text: sanitizeModelJson(data.response) };
+  const description = typeof data.response === 'string' ? data.response : '';
+  console.log(`Ollama description: ${description.trim().slice(0, 240)}`);
+  return { output_text: JSON.stringify(buildMealPayloadFromDescription(description)) };
 }
 
 async function analyzeWithOpenAI(imageUrl) {
@@ -127,6 +128,15 @@ function buildPrompt() {
   ].join('\n');
 }
 
+function buildVisionDescriptionPrompt() {
+  return [
+    'Descreva somente os alimentos visiveis na imagem.',
+    'Use uma lista curta em portugues do Brasil, separada por virgulas.',
+    'Nao estime calorias. Nao use JSON. Nao explique.',
+    'Se aparecer arroz, feijao, carne, frango, ovo, salada, legumes ou massa, escreva esses nomes claramente.',
+  ].join('\n');
+}
+
 function sanitizeModelJson(text) {
   if (typeof text !== 'string') return '{}';
   const trimmed = text.trim();
@@ -144,6 +154,155 @@ function sanitizeModelJson(text) {
   } catch {
     return JSON.stringify(buildConservativeFallbackFromText(extracted));
   }
+}
+
+function buildMealPayloadFromDescription(description) {
+  const normalized = normalizeText(description);
+  const foods = detectFoods(normalized);
+  const normalizedFoods = foods.length > 0
+    ? foods
+    : [{
+      name: 'Alimentos vis\u00EDveis',
+      emoji: '\uD83C\uDF7D\uFE0F',
+      portion: 'por\u00E7\u00E3o estimada pela imagem',
+      calories: 300,
+      confidence: 35,
+      proteinRatio: 0.075,
+      carbsRatio: 0.11,
+      fatRatio: 0.035,
+      fiberRatio: 0.012,
+    }];
+  const calories = normalizedFoods.reduce((total, food) => total + food.calories, 0);
+  const confidence = Math.max(35, Math.min(72, Math.round(average(normalizedFoods.map(food => food.confidence)))));
+
+  return {
+    title: buildMealTitle(normalizedFoods, confidence),
+    type: inferMealType(normalizedFoods),
+    confidence,
+    uncertainty: buildUncertainty(description, foods.length),
+    foods: normalizedFoods.map(({ proteinRatio, carbsRatio, fatRatio, fiberRatio, ...food }) => food),
+    macros: estimateMacrosFromFoods(normalizedFoods),
+  };
+}
+
+function detectFoods(text) {
+  const foods = [];
+
+  if (hasAny(text, ['arroz', 'rice'])) {
+    foods.push(createDetectedFood('Arroz branco', '\uD83C\uDF5A', 'por\u00E7\u00E3o vis\u00EDvel estimada', 180, 64, 0.026, 0.28, 0.003, 0.004));
+  }
+
+  if (hasAny(text, ['feijao', 'feijoada', 'beans', 'bean'])) {
+    foods.push(createDetectedFood('Feij\u00E3o', '\uD83E\uDED8', 'por\u00E7\u00E3o vis\u00EDvel estimada', 120, 62, 0.055, 0.16, 0.006, 0.055));
+  }
+
+  if (hasAny(text, ['frango', 'chicken', 'peito de frango'])) {
+    foods.push(createDetectedFood('Frango', '\uD83C\uDF57', 'por\u00E7\u00E3o m\u00E9dia vis\u00EDvel', 210, 58, 0.19, 0.01, 0.07, 0.002));
+  }
+
+  if (hasAny(text, ['carne', 'bife', 'beef', 'steak', 'meat'])) {
+    foods.push(createDetectedFood('Carne', '\uD83E\uDD69', 'por\u00E7\u00E3o m\u00E9dia vis\u00EDvel', 240, 55, 0.17, 0.01, 0.12, 0.001));
+  }
+
+  if (hasAny(text, ['ovo', 'eggs', 'egg', 'omelete', 'omelet'])) {
+    foods.push(createDetectedFood('Ovo', '\uD83E\uDD5A', 'unidade ou por\u00E7\u00E3o vis\u00EDvel', 90, 58, 0.13, 0.01, 0.1, 0.001));
+  }
+
+  if (hasAny(text, ['macarrao', 'massa', 'pasta', 'noodle', 'noodles', 'spaghetti'])) {
+    foods.push(createDetectedFood('Massa', '\uD83C\uDF5D', 'por\u00E7\u00E3o vis\u00EDvel estimada', 230, 56, 0.04, 0.3, 0.02, 0.008));
+  }
+
+  if (hasAny(text, ['batata', 'potato', 'pure', 'fries', 'frita'])) {
+    foods.push(createDetectedFood('Batata', '\uD83E\uDD54', 'por\u00E7\u00E3o vis\u00EDvel estimada', 160, 54, 0.025, 0.22, 0.035, 0.018));
+  }
+
+  if (hasAny(text, ['cenoura', 'carrot', 'legume', 'vegetable', 'vegetables', 'brocolis', 'broccoli'])) {
+    foods.push(createDetectedFood('Legumes', '\uD83E\uDD55', 'pequena por\u00E7\u00E3o vis\u00EDvel', 45, 50, 0.02, 0.08, 0.003, 0.035));
+  }
+
+  if (hasAny(text, ['salada', 'alface', 'lettuce', 'salad', 'folhas', 'greens'])) {
+    foods.push(createDetectedFood('Salada', '\uD83E\uDD57', 'por\u00E7\u00E3o vis\u00EDvel', 35, 52, 0.018, 0.04, 0.002, 0.025));
+  }
+
+  if (hasAny(text, ['queijo', 'cheese', 'parmesao', 'mussarela', 'mozzarella'])) {
+    foods.push(createDetectedFood('Queijo', '\uD83E\uDDC0', 'pequena quantidade vis\u00EDvel', 90, 48, 0.07, 0.01, 0.08, 0.001));
+  }
+
+  return dedupeFoods(foods).slice(0, 5);
+}
+
+function createDetectedFood(name, emoji, portion, calories, confidence, proteinRatio, carbsRatio, fatRatio, fiberRatio) {
+  return { name, emoji, portion, calories, confidence, proteinRatio, carbsRatio, fatRatio, fiberRatio };
+}
+
+function dedupeFoods(foods) {
+  const seen = new Set();
+  return foods.filter(food => {
+    const key = normalizeText(food.name);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function buildMealTitle(foods, confidence) {
+  if (foods.length === 0) return 'Refei\u00E7\u00E3o vis\u00EDvel';
+  const names = foods.map(food => food.name.toLowerCase());
+  const base = names.length === 1
+    ? foods[0].name
+    : names.length === 2
+      ? `${names[0]} com ${names[1]}`
+      : `${names[0]}, ${names[1]} e outros itens`;
+
+  return confidence < 50 ? `${capitalize(base)} (estimativa local)` : capitalize(base);
+}
+
+function inferMealType(foods) {
+  const names = normalizeText(foods.map(food => food.name).join(' '));
+  if (hasAny(names, ['arroz', 'feijao', 'frango', 'carne', 'massa'])) return 'Almo\u00E7o';
+  return 'Lanche';
+}
+
+function buildUncertainty(description, detectedCount) {
+  if (detectedCount > 0) {
+    const clean = description.trim().replace(/\s+/g, ' ');
+    return clean
+      ? `estimativa local baseada na descri\u00E7\u00E3o: ${clean.slice(0, 120)}`
+      : 'estimativa local conservadora';
+  }
+
+  return 'o modelo local n\u00E3o identificou alimentos espec\u00EDficos com seguran\u00E7a';
+}
+
+function estimateMacrosFromFoods(foods) {
+  const totals = foods.reduce((acc, food) => ({
+    protein: acc.protein + food.calories * food.proteinRatio,
+    carbs: acc.carbs + food.calories * food.carbsRatio,
+    fat: acc.fat + food.calories * food.fatRatio,
+    fiber: acc.fiber + food.calories * food.fiberRatio,
+  }), { protein: 0, carbs: 0, fat: 0, fiber: 0 });
+
+  return {
+    protein: Math.max(1, Math.round(totals.protein)),
+    carbs: Math.max(1, Math.round(totals.carbs)),
+    fat: Math.max(1, Math.round(totals.fat)),
+    fiber: Math.max(1, Math.round(totals.fiber)),
+  };
+}
+
+function normalizeText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function hasAny(text, terms) {
+  return terms.some(term => text.includes(term));
+}
+
+function capitalize(text) {
+  return text ? `${text[0].toUpperCase()}${text.slice(1)}` : text;
 }
 
 function buildConservativeFallbackFromText(text) {
