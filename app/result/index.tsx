@@ -186,6 +186,7 @@ function getBadgeText(meal: Meal, isSavedDetail: boolean) {
   if (meal.analysisSource === 'demo' && meal.analysisError) return 'Estimativa local conservadora';
   if (meal.analysisSource === 'demo') return 'Resultado demonstrativo';
   if (isSavedDetail) return 'Análise salva no histórico';
+  if (meal.analysisSource === 'gemini') return 'Análise via Gemini AI';
   return 'Precisão estimada da análise';
 }
 

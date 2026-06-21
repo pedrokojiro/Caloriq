@@ -14,7 +14,8 @@ async function readJson<T>(key: string, fallback: T): Promise<T> {
 
   try {
     return JSON.parse(raw) as T;
-  } catch {
+  } catch (error) {
+    console.warn(`Failed to parse stored JSON for key "${key}".`, error);
     return fallback;
   }
 }

@@ -7,9 +7,11 @@ const PORT = Number(process.env.MEAL_ANALYSIS_PORT ?? 8787);
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const OLLAMA_GENERATE_URL = 'http://localhost:11434/api/generate';
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1-mini';
+const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
 const DEFAULT_OLLAMA_MODEL = 'llama3.2-vision';
 const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 45000);
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS ?? 25000);
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS ?? 30000);
 const AI_RETRY_COUNT = Number(process.env.MEAL_ANALYSIS_RETRIES ?? 2);
 const AI_RETRY_BASE_DELAY_MS = Number(process.env.MEAL_ANALYSIS_RETRY_BASE_DELAY_MS ?? 500);
 const ALLOWED_ORIGIN = process.env.MEAL_ANALYSIS_ALLOWED_ORIGIN?.trim();
@@ -47,7 +49,9 @@ const server = createServer(async (req, res) => {
     const provider = (process.env.MEAL_ANALYSIS_PROVIDER || 'ollama').toLowerCase();
     const result = provider === 'openai'
       ? await analyzeWithOpenAI(body.imageUrl)
-      : await analyzeWithOllama(body.imageUrl);
+      : provider === 'gemini'
+        ? await analyzeWithGemini(body.imageUrl)
+        : await analyzeWithOllama(body.imageUrl);
 
     sendJson(res, 200, result);
   } catch (error) {
@@ -60,6 +64,7 @@ server.listen(PORT, () => {
   const provider = process.env.MEAL_ANALYSIS_PROVIDER || 'ollama';
   console.log(`Meal analysis server running at http://localhost:${PORT}/analyze`);
   console.log(`Provider: ${provider}`);
+  appendLog(`SERVER_START provider=${provider}`);
 });
 
 async function analyzeWithOllama(imageUrl) {
@@ -93,8 +98,16 @@ async function analyzeWithOllama(imageUrl) {
     }
 
     const description = await readOllamaStream(response);
+    if (!description.trim()) {
+      throw new Error('Ollama retornou uma resposta vazia.');
+    }
+
     if (isLikelyTruncatedText(description)) {
       throw new Error('Ollama retornou uma descriÃ§Ã£o truncada.');
+    }
+
+    if (isLikelyPromptEcho(description)) {
+      throw new Error('Ollama retornou uma lista enviesada pelo prompt.');
     }
 
     console.log(`Ollama description: ${description.trim().slice(0, 240)}`);
@@ -209,6 +222,69 @@ async function analyzeWithOpenAI(imageUrl) {
   }
 }
 
+async function analyzeWithGemini(imageUrl) {
+  const startedAt = Date.now();
+  const apiKey = process.env.GEMINI_API_KEY || process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+  if (!apiKey || apiKey === 'coloque_sua_chave_gemini_aqui') {
+    throw new Error('GEMINI_API_KEY is missing in .env');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  const model = process.env.GEMINI_MODEL || process.env.EXPO_PUBLIC_GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  try {
+    const response = await fetchWithRetry(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: buildPrompt() },
+              {
+                inline_data: {
+                  mime_type: getMimeTypeFromDataUrl(imageUrl),
+                  data: getBase64FromDataUrl(imageUrl),
+                },
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 850,
+          responseMimeType: 'application/json',
+        },
+      }),
+    }, { retries: AI_RETRY_COUNT, baseDelayMs: AI_RETRY_BASE_DELAY_MS });
+
+    const responseText = await response.text();
+    if (!response.ok) {
+      throw new Error(`Gemini retornou HTTP ${response.status}: ${responseText.slice(0, 180)}`);
+    }
+
+    const data = JSON.parse(responseText);
+    const outputText = extractGeminiOutputText(data);
+    if (!outputText.trim()) throw new Error('Gemini retornou uma resposta vazia.');
+
+    appendLog(`GEMINI_OK ${model} ${Date.now() - startedAt}ms ${outputText.trim().slice(0, 240)}`);
+    const sanitized = sanitizeModelJson(outputText);
+    console.log('[SERVER] sanitized output_text (first 300):', sanitized.slice(0, 300));
+    return { output_text: sanitized };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'erro desconhecido';
+    console.warn(`Gemini fallback: ${message}`);
+    appendLog(`GEMINI_FALLBACK ${model} ${Date.now() - startedAt}ms ${message}`);
+    return { output_text: JSON.stringify(buildTimedOutLocalPayload(message)) };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchWithRetry(url, options, { retries = 2, baseDelayMs = 500 } = {}) {
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const response = await fetch(url, options);
@@ -272,11 +348,23 @@ function extractOpenAIOutputText(data) {
   return chunks.join('\n');
 }
 
+function extractGeminiOutputText(data) {
+  const chunks = [];
+  for (const candidate of data?.candidates ?? []) {
+    for (const part of candidate?.content?.parts ?? []) {
+      if (typeof part?.text === 'string') chunks.push(part.text);
+    }
+  }
+
+  return chunks.join('\n');
+}
+
 function buildPrompt() {
   return [
     'Analise apenas a comida claramente visível. Seja conservador, não invente ingredientes ocultos.',
     'Retorne só um objeto JSON, começando com { e terminando com }. Não escreva explicações.',
     'Máximo 4 alimentos principais. Confiança máxima 85.',
+    'O campo "type" deve ser EXATAMENTE um destes valores: "Café", "Almoço", "Jantar" ou "Lanche". Não use "Café da manhã", use apenas "Café".',
     '{"title":"arroz com feijão","type":"Almoço","confidence":55,"uncertainty":"porção estimada visualmente","foods":[{"name":"Arroz branco","emoji":"🍚","portion":"porção média visível","calories":180,"confidence":60}],"macros":{"protein":20,"carbs":55,"fat":14,"fiber":6}}',
     'Use português do Brasil.',
   ].join('\n');
@@ -284,10 +372,9 @@ function buildPrompt() {
 
 function buildVisionDescriptionPrompt() {
   return [
-    'Responda SOMENTE com uma linha de texto, sem asteriscos, sem hifen, sem markdown, sem explicacoes.',
-    'Liste apenas os alimentos visiveis na imagem, separados por virgula, em portugues do Brasil.',
-    'Exemplo de resposta correta: arroz branco, feijao, frango grelhado, salada',
-    'Nao use marcadores. Nao escreva frases. Nao estime calorias. Nao use JSON.',
+    'Look at the image and list only the visible food and drink items.',
+    'Answer with a short comma-separated list. Do not explain. Do not estimate calories.',
+    'Use common item names such as bread, toast, egg, cheese, beans, rice, coffee, salad.',
   ].join('\n');
 }
 
@@ -297,6 +384,14 @@ function isLikelyTruncatedText(text) {
 
   const lastToken = trimmed.split(/\s+/).pop() || '';
   return /[A-Za-zÀ-ÿ]{3,}$/.test(lastToken) && !/[,.]$/.test(trimmed);
+}
+
+function isLikelyPromptEcho(text) {
+  const normalized = normalizeText(text);
+  return (
+    hasAny(normalized, ['common item names', 'do not explain', 'comma-separated']) ||
+    hasAny(normalized, ['nao ha alimentos', 'nao haver', 'nao haber', 'no food', 'no visible food'])
+  );
 }
 
 function sanitizeModelJson(text) {
@@ -311,8 +406,9 @@ function sanitizeModelJson(text) {
   const extracted = extractFirstJsonObject(fenced);
   if (!extracted) return fenced;
 
+  const cleaned = extracted.replace(/,\s*([\]}])/g, '$1');
   try {
-    return JSON.stringify(JSON.parse(extracted));
+    return JSON.stringify(JSON.parse(cleaned));
   } catch {
     return JSON.stringify(buildConservativeFallbackFromText(extracted));
   }
@@ -407,6 +503,10 @@ function detectFoods(text) {
     foods.push(createDetectedFood('Ovo', '\uD83E\uDD5A', 'unidade ou por\u00E7\u00E3o vis\u00EDvel', 90, 58, 0.13, 0.01, 0.1, 0.001));
   }
 
+  if (hasAny(text, ['pao', 'paes', 'bread', 'toast', 'torrada', 'torradas', 'sourdough'])) {
+    foods.push(createDetectedFood('P\u00E3o ou torrada', '\uD83C\uDF5E', 'por\u00E7\u00E3o vis\u00EDvel', 160, 56, 0.045, 0.32, 0.025, 0.018));
+  }
+
   if (hasAny(text, ['macarrao', 'massa', 'pasta', 'noodle', 'noodles', 'spaghetti', 'espaguete'])) {
     foods.push(createDetectedFood('Massa', '\uD83C\uDF5D', 'por\u00E7\u00E3o vis\u00EDvel estimada', 230, 56, 0.04, 0.3, 0.02, 0.008));
   }
@@ -433,6 +533,10 @@ function detectFoods(text) {
 
   if (hasAny(text, ['queijo', 'cheese', 'parmesao', 'mussarela', 'mozzarella'])) {
     foods.push(createDetectedFood('Queijo', '\uD83E\uDDC0', 'pequena quantidade vis\u00EDvel', 90, 48, 0.07, 0.01, 0.08, 0.001));
+  }
+
+  if (hasAny(text, ['cafe', 'coffee', 'latte', 'cappuccino', 'capuccino'])) {
+    foods.push(createDetectedFood('Caf\u00E9', '\u2615', 'x\u00EDcara vis\u00EDvel', 20, 45, 0.01, 0.02, 0.005, 0.001));
   }
 
   return dedupeFoods(foods).slice(0, 5);
@@ -466,6 +570,7 @@ function buildMealTitle(foods, confidence) {
 
 function inferMealType(foods) {
   const names = normalizeText(foods.map(food => food.name).join(' '));
+  if (hasAny(names, ['pao', 'torrada', 'ovo', 'cafe', 'queijo'])) return 'Caf\u00E9';
   if (hasAny(names, ['arroz', 'feijao', 'frango', 'carne', 'massa'])) return 'Almo\u00E7o';
   return 'Lanche';
 }
@@ -599,10 +704,15 @@ function extractFirstJsonObject(text) {
 function getBase64FromDataUrl(imageUrl) {
   const commaIndex = imageUrl.indexOf(',');
   if (!imageUrl.startsWith('data:') || commaIndex === -1) {
-    throw new Error('Ollama precisa receber uma imagem em data URL/base64.');
+    throw new Error('A imagem precisa estar em formato data URL/base64.');
   }
 
   return imageUrl.slice(commaIndex + 1);
+}
+
+function getMimeTypeFromDataUrl(imageUrl) {
+  const match = String(imageUrl || '').match(/^data:([^;,]+)[;,]/);
+  return match?.[1] || 'image/jpeg';
 }
 
 function loadEnvFile() {

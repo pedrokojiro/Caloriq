@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { colors } from '../../constants/colors';
+import { storePendingAnalysisImage } from '../../lib/pendingAnalysisImage';
 
 export default function CameraScreen() {
   const [facing, setFacing] = useState<CameraType>('back');
@@ -41,9 +42,10 @@ export default function CameraScreen() {
     if (!cameraRef.current) return;
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.8 });
+      const imageId = photo?.uri ? storePendingAnalysisImage(photo.uri) : '';
       router.push({
         pathname: '/camera/analyzing',
-        params: { imageUri: photo?.uri ?? '' },
+        params: { imageId },
       });
     } catch {
       Alert.alert('Erro', 'Não foi possível tirar a foto. Tente novamente.');
@@ -59,9 +61,10 @@ export default function CameraScreen() {
     });
 
     if (!result.canceled && result.assets.length > 0) {
+      const imageId = storePendingAnalysisImage(result.assets[0].uri);
       router.push({
         pathname: '/camera/analyzing',
-        params: { imageUri: result.assets[0].uri },
+        params: { imageId },
       });
     }
   }

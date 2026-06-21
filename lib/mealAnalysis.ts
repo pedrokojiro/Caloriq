@@ -102,18 +102,25 @@ export async function analyzeMealImage(imageUri?: string, signal?: AbortSignal):
 
   try {
     const imageUrl = await toDataUrl(imageUri);
+    console.log('[CaloriQ] Sending to backend:', analysisEndpoint);
     const data = hasEndpoint
       ? await requestBackendAnalysis(analysisEndpoint as string, imageUrl, signal, sharedKey)
       : await requestOpenAIAnalysis(apiKey as string, imageUrl, signal);
+    console.log('[CaloriQ] Backend response keys:', Object.keys(data));
     const text = extractOutputText(data);
+    console.log('[CaloriQ] Extracted text (first 200):', String(text).slice(0, 200));
     const payload = parseJsonPayload(text);
+    console.log('[CaloriQ] Parsed payload title:', payload?.title);
     return normalizeMealPayload(payload, imageUri);
   } catch (error) {
+    console.error('[CaloriQ] Analysis error:', error);
+    console.error('[CaloriQ] Error type:', error?.constructor?.name, 'Message:', error instanceof Error ? error.message : String(error));
     if (isAbortError(error)) {
       throw error;
     }
 
     if (isJsonParsingError(error)) {
+      console.error('[CaloriQ] Treated as JSON parsing error → generic local estimate');
       return createGenericLocalEstimate(imageUri);
     }
 
@@ -233,7 +240,9 @@ async function requestOpenAIAnalysis(apiKey: string, imageUrl: string, signal?: 
 }
 
 async function toDataUrl(imageUri: string): Promise<string> {
-  if (imageUri.startsWith('data:')) return imageUri;
+  if (imageUri.startsWith('data:')) {
+    return typeof document === 'undefined' ? imageUri : dataUrlToJpegDataUrl(imageUri);
+  }
   if (imageUri.startsWith('http://') || imageUri.startsWith('https://')) return imageUri;
   if (imageUri.startsWith('blob:')) return blobUriToDataUrl(imageUri);
 
@@ -255,6 +264,12 @@ async function toDataUrl(imageUri: string): Promise<string> {
     encoding: FileSystem.EncodingType.Base64,
   });
   return `data:${getMimeType(imageUri)};base64,${base64}`;
+}
+
+async function dataUrlToJpegDataUrl(uri: string): Promise<string> {
+  const response = await fetch(uri);
+  const blob = await response.blob();
+  return compressBlobToDataUrl(blob);
 }
 
 async function blobUriToDataUrl(uri: string): Promise<string> {
@@ -319,10 +334,16 @@ function extractOutputText(data: any): string {
 }
 
 function parseJsonPayload(text: string): OpenAIMealPayload {
-  const trimmed = text.trim();
+  const trimmed = text.trim().replace(/^\uFEFF/, '');
   const withoutFence = trimmed.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
   const extracted = extractFirstJsonObject(withoutFence) ?? withoutFence;
-  return JSON.parse(extracted) as OpenAIMealPayload;
+  const cleaned = stripTrailingCommas(extracted);
+  return JSON.parse(cleaned) as OpenAIMealPayload;
+}
+
+function stripTrailingCommas(json: string): string {
+  return json
+    .replace(/,\s*([\]}])/g, '$1');
 }
 
 function extractFirstJsonObject(text: string) {
@@ -386,19 +407,37 @@ function normalizeMealPayload(payload: OpenAIMealPayload, imageUri?: string): Me
       fiber: clampNumber(payload.macros.fiber, 0, 80, fallback.macros.fiber),
     }
     : estimateMacros(calories);
+  const isLocalEstimate = isGenericLocalPayload(payload, foods, confidence);
+  const provider = (process.env.MEAL_ANALYSIS_PROVIDER || process.env.EXPO_PUBLIC_MEAL_ANALYSIS_PROVIDER || '').toLowerCase();
+  const analysisSource = isLocalEstimate ? 'demo' as const : provider === 'gemini' ? 'gemini' as const : 'openai' as const;
 
   return {
     id: `${Date.now()}`,
     title: buildCautiousTitle(payload.title, payload.uncertainty, confidence, fallback.title),
-    type: isMealType(payload.type) ? payload.type : fallback.type,
+    type: normalizeMealType(payload.type) ?? fallback.type,
     imageUri,
     createdAt: new Date().toISOString(),
     calories,
     confidence,
     foods,
     macros,
-    analysisSource: 'openai',
+    analysisSource,
+    analysisError: isLocalEstimate
+      ? payload.uncertainty?.trim() || 'A IA local retornou uma estimativa genérica.'
+      : undefined,
   };
+}
+
+function isGenericLocalPayload(payload: OpenAIMealPayload, foods: FoodItem[], confidence: number) {
+  const title = normalizeText(payload.title);
+  const uncertainty = normalizeText(payload.uncertainty);
+  const onlyGenericFood = foods.length === 1 && normalizeText(foods[0].name).includes('alimentos visiveis');
+
+  return confidence <= 35 && onlyGenericFood && (
+    title.includes('estimativa local') ||
+    uncertainty.includes('modelo local') ||
+    uncertainty.includes('estimativa conservadora')
+  );
 }
 
 function estimateMacros(calories: number) {
@@ -418,11 +457,12 @@ function buildCautiousTitle(title: string | undefined, uncertainty: string | und
 
 function getFriendlyError(error: unknown) {
   const message = error instanceof Error ? error.message : 'Erro desconhecido na análise.';
-  if (message.includes('401')) return 'Chave da OpenAI inválida ou ausente. Confira o arquivo .env e reinicie o Expo.';
-  if (message.includes('429')) return 'Limite ou saldo da API atingido. Verifique billing/usage na OpenAI.';
+  if (message.includes('401')) return 'Chave de API inválida ou ausente. Confira o arquivo .env e reinicie o Expo.';
+  if (message.includes('429')) return 'Limite ou saldo da API atingido. Verifique billing/usage do seu provedor.';
   if (message.includes('HTTP 400')) return 'A API rejeitou a imagem ou o formato da requisição.';
+  if (message.includes('Gemini')) return 'O Gemini não respondeu. Verifique sua GEMINI_API_KEY no .env e reinicie o servidor.';
   if (message.includes('Ollama')) return 'Ollama não respondeu. Instale o Ollama, baixe o modelo de visão e reinicie o servidor local.';
-  if (message.includes('Failed to fetch')) return 'Não foi possível conectar à OpenAI pelo navegador.';
+  if (message.includes('Failed to fetch')) return 'Não foi possível conectar ao servidor de análise.';
   return message;
 }
 
@@ -440,6 +480,23 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   return Math.min(Math.max(number, min), max);
 }
 
+function normalizeText(text: unknown) {
+  return String(text || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
 function isMealType(value: unknown): value is MealType {
   return value === 'Café' || value === 'Almoço' || value === 'Jantar' || value === 'Lanche';
+}
+
+function normalizeMealType(value: unknown): MealType | undefined {
+  if (isMealType(value)) return value;
+  const normalized = normalizeText(value);
+  if (normalized.includes('cafe')) return 'Café';
+  if (normalized.includes('almoco')) return 'Almoço';
+  if (normalized.includes('jantar')) return 'Jantar';
+  if (normalized.includes('lanche')) return 'Lanche';
+  return undefined;
 }

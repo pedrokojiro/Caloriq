@@ -3,16 +3,18 @@ import { View, Text, Image, StyleSheet, Animated, Easing } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { colors } from '../../constants/colors';
 import { analyzeMealImage } from '../../lib/mealAnalysis';
+import { clearPendingAnalysisImage, getPendingAnalysisImage } from '../../lib/pendingAnalysisImage';
 
 const STEPS = [
   { text: 'Imagem recebida e processada', done: true },
-  { text: 'Enviando para a IA local', done: true },
+  { text: 'Enviando para a IA', done: true },
   { text: 'Identificando alimentos visíveis...', done: false },
   { text: 'Estimando calorias e macros', done: false },
 ];
 
 export default function AnalyzingScreen() {
-  const { imageUri } = useLocalSearchParams<{ imageUri?: string }>();
+  const { imageId, imageUri: routeImageUri } = useLocalSearchParams<{ imageId?: string; imageUri?: string }>();
+  const imageUri = getPendingAnalysisImage(imageId) ?? routeImageUri;
   const pulse1 = useRef(new Animated.Value(1)).current;
   const pulse2 = useRef(new Animated.Value(1)).current;
   const pulse3 = useRef(new Animated.Value(1)).current;
@@ -77,11 +79,12 @@ export default function AnalyzingScreen() {
     return () => {
       canceled = true;
       controller.abort();
+      clearPendingAnalysisImage(imageId);
       a1.stop();
       a2.stop();
       a3.stop();
     };
-  }, [fadeAnim, imageUri, pulse1, pulse2, pulse3]);
+  }, [fadeAnim, imageId, imageUri, pulse1, pulse2, pulse3]);
 
   return (
     <View style={styles.container}>
@@ -114,7 +117,7 @@ export default function AnalyzingScreen() {
 
         <Text style={styles.label}>IA TRABALHANDO</Text>
         <Text style={styles.title}>Analisando alimentos e{'\n'}estimando calorias...</Text>
-        <Text style={styles.subtitle}>No Ollama, a primeira análise pode levar mais tempo</Text>
+        <Text style={styles.subtitle}>A análise pode levar alguns segundos</Text>
 
         <View style={styles.steps}>
           {STEPS.map((step, i) => (

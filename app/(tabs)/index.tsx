@@ -10,6 +10,7 @@ import { colors } from '../../constants/colors';
 import { DailyGoal, Meal, UserProfile } from '../../lib/types';
 import { formatMealTime, getGoal, getMeals, getProfile, isToday } from '../../lib/storage';
 import { defaultGoal, defaultProfile } from '../../lib/defaults';
+import { storePendingAnalysisImage } from '../../lib/pendingAnalysisImage';
 
 export default function HomeScreen() {
   const [meals, setMeals] = useState<Meal[]>([]);
@@ -71,9 +72,10 @@ export default function HomeScreen() {
     });
 
     if (!result.canceled && result.assets.length > 0) {
+      const imageId = storePendingAnalysisImage(result.assets[0].uri);
       router.push({
         pathname: '/camera/analyzing',
-        params: { imageUri: result.assets[0].uri },
+        params: { imageId },
       });
     }
   }

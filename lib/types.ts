@@ -25,7 +25,7 @@ export type Meal = {
   confidence: number;
   foods: FoodItem[];
   macros: MacroNutrition;
-  analysisSource?: 'openai' | 'demo' | 'error';
+  analysisSource?: 'openai' | 'gemini' | 'demo' | 'error';
   analysisError?: string;
 };
 

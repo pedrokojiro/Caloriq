@@ -78,9 +78,17 @@ export default function ProfileScreen() {
   }
 
   async function toggleNotifications(value: boolean) {
+    const previousProfile = profile;
     const nextProfile = { ...profile, notifications: value };
     setProfile(nextProfile);
-    await saveProfile(nextProfile);
+
+    try {
+      await saveProfile(nextProfile);
+    } catch (error) {
+      setProfile(previousProfile);
+      console.warn('Failed to persist notification preference.', error);
+      Alert.alert('Erro', 'NÃ£o foi possÃ­vel salvar a preferÃªncia de notificaÃ§Ãµes.');
+    }
   }
 
   return (
@@ -302,12 +310,19 @@ function formToProfile(form: ProfileForm, current: UserProfile): UserProfile {
     ...current,
     name: form.name.trim(),
     email: form.email.trim(),
-    age: Number(form.age) || current.age,
-    weightKg: Number(form.weightKg) || current.weightKg,
-    targetWeightKg: Number(form.targetWeightKg) || current.targetWeightKg,
-    heightCm: Number(form.heightCm) || current.heightCm,
+    age: parseNumberField(form.age, current.age),
+    weightKg: parseNumberField(form.weightKg, current.weightKg),
+    targetWeightKg: parseNumberField(form.targetWeightKg, current.targetWeightKg),
+    heightCm: parseNumberField(form.heightCm, current.heightCm),
     objective: form.objective.trim() || current.objective,
   };
+}
+
+function parseNumberField(value: string, fallback: number): number {
+  if (value.trim() === '') return fallback;
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 const styles = StyleSheet.create({
