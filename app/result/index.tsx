@@ -196,11 +196,31 @@ function parseMeal(mealParam?: string): { meal: Meal; valid: boolean } {
 
   try {
     const meal = JSON.parse(mealParam) as Meal;
-    const valid = Boolean(meal.id && meal.title && meal.createdAt && Array.isArray(meal.foods));
+    const valid = Boolean(
+      meal.id &&
+      meal.title &&
+      meal.createdAt &&
+      typeof meal.calories === 'number' &&
+      typeof meal.confidence === 'number' &&
+      Array.isArray(meal.foods) &&
+      isValidMacros(meal.macros)
+    );
     return { meal: valid ? meal : createAnalyzedMeal(), valid };
   } catch {
     return { meal: createAnalyzedMeal(), valid: false };
   }
+}
+
+function isValidMacros(macros: unknown): macros is Meal['macros'] {
+  if (!macros || typeof macros !== 'object') return false;
+
+  const value = macros as Partial<Meal['macros']>;
+  return (
+    typeof value.protein === 'number' &&
+    typeof value.carbs === 'number' &&
+    typeof value.fat === 'number' &&
+    typeof value.fiber === 'number'
+  );
 }
 
 function MacroBlock({ label, value, bg, textColor }: {

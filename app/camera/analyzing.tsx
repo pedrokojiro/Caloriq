@@ -52,24 +52,31 @@ export default function AnalyzingScreen() {
     a3.start();
 
     let canceled = false;
+    const controller = new AbortController();
 
     async function runAnalysis() {
-      const [meal] = await Promise.all([
-        analyzeMealImage(imageUri),
-        new Promise(resolve => setTimeout(resolve, 2600)),
-      ]);
+      try {
+        const [meal] = await Promise.all([
+          analyzeMealImage(imageUri, controller.signal),
+          new Promise(resolve => setTimeout(resolve, 2600)),
+        ]);
 
-      if (canceled) return;
-      router.replace({
-        pathname: '/result',
-        params: { meal: JSON.stringify(meal), mode: 'new' },
-      });
+        if (canceled) return;
+        router.replace({
+          pathname: '/result',
+          params: { meal: JSON.stringify(meal), mode: 'new' },
+        });
+      } catch (error) {
+        if (canceled || isAbortError(error)) return;
+        throw error;
+      }
     }
 
     runAnalysis();
 
     return () => {
       canceled = true;
+      controller.abort();
       a1.stop();
       a2.stop();
       a3.stop();
@@ -123,6 +130,10 @@ export default function AnalyzingScreen() {
       </Animated.View>
     </View>
   );
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 const styles = StyleSheet.create({

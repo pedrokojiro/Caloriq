@@ -88,25 +88,31 @@ export function createAnalyzedMeal(imageUri?: string): Meal {
   };
 }
 
-export async function analyzeMealImage(imageUri?: string): Promise<Meal> {
+export async function analyzeMealImage(imageUri?: string, signal?: AbortSignal): Promise<Meal> {
   const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY?.trim();
   const analysisEndpoint = process.env.EXPO_PUBLIC_MEAL_ANALYSIS_ENDPOINT?.trim();
+  const sharedKey = process.env.EXPO_PUBLIC_MEAL_ANALYSIS_SHARED_KEY?.trim();
   const hasApiKey = Boolean(apiKey && apiKey !== PLACEHOLDER_KEY);
   const hasEndpoint = Boolean(analysisEndpoint);
+  const canUseDirectOpenAI = Boolean(__DEV__ && hasApiKey);
 
-  if ((!hasApiKey && !hasEndpoint) || !imageUri) {
+  if ((!canUseDirectOpenAI && !hasEndpoint) || !imageUri) {
     return createAnalyzedMeal(imageUri);
   }
 
   try {
     const imageUrl = await toDataUrl(imageUri);
     const data = hasEndpoint
-      ? await requestBackendAnalysis(analysisEndpoint as string, imageUrl)
-      : await requestOpenAIAnalysis(apiKey as string, imageUrl);
+      ? await requestBackendAnalysis(analysisEndpoint as string, imageUrl, signal, sharedKey)
+      : await requestOpenAIAnalysis(apiKey as string, imageUrl, signal);
     const text = extractOutputText(data);
     const payload = parseJsonPayload(text);
     return normalizeMealPayload(payload, imageUri);
   } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
+
     if (isJsonParsingError(error)) {
       return createGenericLocalEstimate(imageUri);
     }
@@ -156,10 +162,14 @@ function createAnalysisErrorMeal(imageUri: string | undefined, message: string):
   };
 }
 
-async function requestBackendAnalysis(endpoint: string, imageUrl: string) {
+async function requestBackendAnalysis(endpoint: string, imageUrl: string, signal?: AbortSignal, sharedKey?: string) {
   const response = await fetch(endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(sharedKey ? { 'X-App-Key': sharedKey } : {}),
+    },
+    signal,
     body: JSON.stringify({ imageUrl }),
   });
 
@@ -171,13 +181,14 @@ async function requestBackendAnalysis(endpoint: string, imageUrl: string) {
   return response.json();
 }
 
-async function requestOpenAIAnalysis(apiKey: string, imageUrl: string) {
+async function requestOpenAIAnalysis(apiKey: string, imageUrl: string, signal?: AbortSignal) {
   const response = await fetch(OPENAI_RESPONSES_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
+    signal,
     body: JSON.stringify({
       model: process.env.EXPO_PUBLIC_OPENAI_MODEL ?? DEFAULT_MODEL,
       input: [
@@ -207,6 +218,7 @@ async function requestOpenAIAnalysis(apiKey: string, imageUrl: string) {
           ],
         },
       ],
+      text: { format: { type: 'json_object' } },
       temperature: 0.1,
       max_output_tokens: 850,
     }),
@@ -417,6 +429,10 @@ function getFriendlyError(error: unknown) {
 function isJsonParsingError(error: unknown) {
   if (!(error instanceof Error)) return false;
   return error instanceof SyntaxError || error.message.includes('JSON');
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number) {

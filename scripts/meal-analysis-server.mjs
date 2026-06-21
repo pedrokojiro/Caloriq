@@ -8,10 +8,18 @@ const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const OLLAMA_GENERATE_URL = 'http://localhost:11434/api/generate';
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1-mini';
 const DEFAULT_OLLAMA_MODEL = 'llama3.2-vision';
-const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 600000);
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 45000);
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS ?? 25000);
+const AI_RETRY_COUNT = Number(process.env.MEAL_ANALYSIS_RETRIES ?? 2);
+const AI_RETRY_BASE_DELAY_MS = Number(process.env.MEAL_ANALYSIS_RETRY_BASE_DELAY_MS ?? 500);
+const ALLOWED_ORIGIN = process.env.MEAL_ANALYSIS_ALLOWED_ORIGIN?.trim();
+const SHARED_KEY = process.env.MEAL_ANALYSIS_SHARED_KEY?.trim();
 
 const server = createServer(async (req, res) => {
-  setCorsHeaders(res);
+  if (!setCorsHeaders(req, res)) {
+    sendJson(res, 403, { error: 'Origin not allowed' });
+    return;
+  }
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -21,6 +29,11 @@ const server = createServer(async (req, res) => {
 
   if (req.method !== 'POST' || req.url !== '/analyze') {
     sendJson(res, 404, { error: 'Endpoint not found' });
+    return;
+  }
+
+  if (!SHARED_KEY || req.headers['x-app-key'] !== SHARED_KEY) {
+    sendJson(res, 401, { error: 'Unauthorized' });
     return;
   }
 
@@ -57,7 +70,7 @@ async function analyzeWithOllama(imageUrl) {
   const model = process.env.OLLAMA_VISION_MODEL || DEFAULT_OLLAMA_MODEL;
 
   try {
-    const response = await fetch(OLLAMA_GENERATE_URL, {
+    const response = await fetchWithRetry(OLLAMA_GENERATE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
@@ -69,10 +82,10 @@ async function analyzeWithOllama(imageUrl) {
         keep_alive: '10m',
         options: {
           temperature: 0,
-          num_predict: 40,
+          num_predict: 120,
         },
       }),
-    });
+    }, { retries: AI_RETRY_COUNT, baseDelayMs: AI_RETRY_BASE_DELAY_MS });
 
     if (!response.ok) {
       const body = await response.text();
@@ -80,6 +93,10 @@ async function analyzeWithOllama(imageUrl) {
     }
 
     const description = await readOllamaStream(response);
+    if (isLikelyTruncatedText(description)) {
+      throw new Error('Ollama retornou uma descriÃ§Ã£o truncada.');
+    }
+
     console.log(`Ollama description: ${description.trim().slice(0, 240)}`);
     appendLog(`OK ${model} ${Date.now() - startedAt}ms ${description.trim().slice(0, 240)}`);
     return { output_text: JSON.stringify(buildMealPayloadFromDescription(description)) };
@@ -137,39 +154,122 @@ async function readOllamaStream(response) {
 }
 
 async function analyzeWithOpenAI(imageUrl) {
+  const startedAt = Date.now();
   const apiKey = process.env.OPENAI_API_KEY || process.env.EXPO_PUBLIC_OPENAI_API_KEY;
   if (!apiKey || apiKey === 'coloque_sua_chave_openai_aqui') {
     throw new Error('OPENAI_API_KEY is missing in .env');
   }
 
-  const response = await fetch(OPENAI_RESPONSES_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: process.env.EXPO_PUBLIC_OPENAI_MODEL || DEFAULT_OPENAI_MODEL,
-      input: [
-        {
-          role: 'user',
-          content: [
-            { type: 'input_text', text: buildPrompt() },
-            { type: 'input_image', image_url: imageUrl, detail: 'low' },
-          ],
-        },
-      ],
-      temperature: 0.1,
-      max_output_tokens: 850,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+  const model = process.env.EXPO_PUBLIC_OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
 
-  const responseText = await response.text();
-  if (!response.ok) {
-    throw new Error(`OpenAI retornou HTTP ${response.status}: ${responseText.slice(0, 180)}`);
+  try {
+    const response = await fetchWithRetry(OPENAI_RESPONSES_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        input: [
+          {
+            role: 'user',
+            content: [
+              { type: 'input_text', text: buildPrompt() },
+              { type: 'input_image', image_url: imageUrl, detail: 'low' },
+            ],
+          },
+        ],
+        text: { format: { type: 'json_object' } },
+        temperature: 0.1,
+        max_output_tokens: 850,
+      }),
+    }, { retries: AI_RETRY_COUNT, baseDelayMs: AI_RETRY_BASE_DELAY_MS });
+
+    const responseText = await response.text();
+    if (!response.ok) {
+      throw new Error(`OpenAI retornou HTTP ${response.status}: ${responseText.slice(0, 180)}`);
+    }
+
+    const data = JSON.parse(responseText);
+    const outputText = extractOpenAIOutputText(data);
+    return outputText
+      ? { ...data, output_text: sanitizeModelJson(outputText) }
+      : data;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'erro desconhecido';
+    console.warn(`OpenAI fallback: ${message}`);
+    appendLog(`OPENAI_FALLBACK ${model} ${Date.now() - startedAt}ms ${message}`);
+    return { output_text: JSON.stringify(buildTimedOutLocalPayload(message)) };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchWithRetry(url, options, { retries = 2, baseDelayMs = 500 } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const response = await fetch(url, options);
+    if (!isRetryableStatus(response.status) || attempt === retries) return response;
+
+    await response.arrayBuffer().catch(() => undefined);
+    await delay(getRetryDelayMs(response, attempt, baseDelayMs), options?.signal);
   }
 
-  return JSON.parse(responseText);
+  throw new Error('Retry loop ended unexpectedly');
+}
+
+function isRetryableStatus(status) {
+  return status === 429 || status >= 500;
+}
+
+function getRetryDelayMs(response, attempt, baseDelayMs) {
+  const retryAfter = response.headers.get('retry-after');
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+
+    const retryDate = Date.parse(retryAfter);
+    if (Number.isFinite(retryDate)) return Math.max(0, retryDate - Date.now());
+  }
+
+  return baseDelayMs * (2 ** attempt);
+}
+
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createAbortError());
+      return;
+    }
+
+    const timeout = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timeout);
+      reject(createAbortError());
+    }, { once: true });
+  });
+}
+
+function createAbortError() {
+  const error = new Error('The operation was aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function extractOpenAIOutputText(data) {
+  if (typeof data?.output_text === 'string') return data.output_text;
+
+  const chunks = [];
+  for (const item of data?.output ?? []) {
+    for (const content of item?.content ?? []) {
+      if (typeof content?.text === 'string') chunks.push(content.text);
+    }
+  }
+
+  return chunks.join('\n');
 }
 
 function buildPrompt() {
@@ -184,11 +284,19 @@ function buildPrompt() {
 
 function buildVisionDescriptionPrompt() {
   return [
-    'Descreva somente os alimentos visiveis na imagem.',
-    'Use uma lista curta em portugues do Brasil, separada por virgulas.',
-    'Nao estime calorias. Nao use JSON. Nao explique.',
-    'Se aparecer arroz, feijao, carne, frango, ovo, salada, legumes ou massa, escreva esses nomes claramente.',
+    'Responda SOMENTE com uma linha de texto, sem asteriscos, sem hifen, sem markdown, sem explicacoes.',
+    'Liste apenas os alimentos visiveis na imagem, separados por virgula, em portugues do Brasil.',
+    'Exemplo de resposta correta: arroz branco, feijao, frango grelhado, salada',
+    'Nao use marcadores. Nao escreva frases. Nao estime calorias. Nao use JSON.',
   ].join('\n');
+}
+
+function isLikelyTruncatedText(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return false;
+
+  const lastToken = trimmed.split(/\s+/).pop() || '';
+  return /[A-Za-zÀ-ÿ]{3,}$/.test(lastToken) && !/[,.]$/.test(trimmed);
 }
 
 function sanitizeModelJson(text) {
@@ -287,19 +395,19 @@ function detectFoods(text) {
     foods.push(createDetectedFood('Feij\u00E3o', '\uD83E\uDED8', 'por\u00E7\u00E3o vis\u00EDvel estimada', 120, 62, 0.055, 0.16, 0.006, 0.055));
   }
 
-  if (!hasRiceAndBeans && hasAny(text, ['frango grelhado', 'peito de frango', 'pedaco de frango', 'pedaço de frango', 'chicken'])) {
+  if (hasAny(text, ['frango', 'chicken', 'peito de frango', 'pedaco de frango'])) {
     foods.push(createDetectedFood('Frango', '\uD83C\uDF57', 'por\u00E7\u00E3o m\u00E9dia vis\u00EDvel', 210, 58, 0.19, 0.01, 0.07, 0.002));
   }
 
-  if (!hasRiceAndBeans && hasAny(text, ['bife', 'carne bovina', 'carne moida', 'carne moída', 'beef', 'steak'])) {
+  if (!hasRiceAndBeans && hasAny(text, ['bife', 'carne bovina', 'carne moida', 'carne moida', 'carne', 'beef', 'steak'])) {
     foods.push(createDetectedFood('Carne', '\uD83E\uDD69', 'por\u00E7\u00E3o m\u00E9dia vis\u00EDvel', 240, 55, 0.17, 0.01, 0.12, 0.001));
   }
 
-  if (!hasRiceAndBeans && hasAny(text, ['ovo frito', 'ovo cozido', 'ovos', 'eggs', 'egg', 'omelete', 'omelet'])) {
+  if (hasAny(text, ['ovo', 'ovos', 'eggs', 'egg', 'omelete', 'omelet'])) {
     foods.push(createDetectedFood('Ovo', '\uD83E\uDD5A', 'unidade ou por\u00E7\u00E3o vis\u00EDvel', 90, 58, 0.13, 0.01, 0.1, 0.001));
   }
 
-  if (hasAny(text, ['macarrao', 'massa', 'pasta', 'noodle', 'noodles', 'spaghetti'])) {
+  if (hasAny(text, ['macarrao', 'massa', 'pasta', 'noodle', 'noodles', 'spaghetti', 'espaguete'])) {
     foods.push(createDetectedFood('Massa', '\uD83C\uDF5D', 'por\u00E7\u00E3o vis\u00EDvel estimada', 230, 56, 0.04, 0.3, 0.02, 0.008));
   }
 
@@ -307,11 +415,19 @@ function detectFoods(text) {
     foods.push(createDetectedFood('Batata', '\uD83E\uDD54', 'por\u00E7\u00E3o vis\u00EDvel estimada', 160, 54, 0.025, 0.22, 0.035, 0.018));
   }
 
-  if (hasAny(text, ['cenoura', 'carrot', 'legume', 'vegetable', 'vegetables', 'brocolis', 'broccoli'])) {
+  if (hasAny(text, ['pimenta', 'pepper', 'pimentao'])) {
+    foods.push(createDetectedFood('Pimenta', '\uD83C\uDF36\uFE0F', 'pequena quantidade vis\u00EDvel', 10, 45, 0.01, 0.02, 0.001, 0.01));
+  }
+
+  if (hasAny(text, ['cebola', 'onion'])) {
+    foods.push(createDetectedFood('Cebola', '\uD83E\uDDC5', 'pequena quantidade vis\u00EDvel', 15, 45, 0.01, 0.035, 0.001, 0.008));
+  }
+
+  if (hasAny(text, ['cenoura', 'carrot', 'legume', 'vegetable', 'vegetables', 'brocolis', 'broccoli', 'abobrinha', 'zucchini'])) {
     foods.push(createDetectedFood('Legumes', '\uD83E\uDD55', 'pequena por\u00E7\u00E3o vis\u00EDvel', 45, 50, 0.02, 0.08, 0.003, 0.035));
   }
 
-  if (hasAny(text, ['salada', 'alface', 'lettuce', 'salad', 'folhas', 'greens'])) {
+  if (hasAny(text, ['salada', 'alface', 'lettuce', 'salad', 'folhas', 'greens', 'rucula', 'espinafre'])) {
     foods.push(createDetectedFood('Salada', '\uD83E\uDD57', 'por\u00E7\u00E3o vis\u00EDvel', 35, 52, 0.018, 0.04, 0.002, 0.025));
   }
 
@@ -384,6 +500,10 @@ function estimateMacrosFromFoods(foods) {
 function normalizeText(text) {
   return String(text || '')
     .toLowerCase()
+    // Strip markdown list markers (*, -, •) at line start
+    .replace(/^[\s*\-•]+/gm, '')
+    // Remove remaining asterisks used for bold/italic
+    .replace(/\*/g, '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
 }
@@ -502,10 +622,20 @@ function loadEnvFile() {
   }
 }
 
-function setCorsHeaders(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+function setCorsHeaders(req, res) {
+  const origin = req.headers.origin;
+
+  if (ALLOWED_ORIGIN) {
+    if (origin && origin !== ALLOWED_ORIGIN) return false;
+    res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+    res.setHeader('Vary', 'Origin');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-App-Key');
+  return true;
 }
 
 function sendJson(res, status, body) {
